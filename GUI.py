@@ -3,10 +3,11 @@ import time
 import json
 import numpy as np
 
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, QSize
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
-                             QHBoxLayout, QLabel, QFrame, QSplitter, QTabWidget, QTextEdit)
-from PyQt6.QtGui import QColor, QPainter, QPen
+                             QHBoxLayout, QLabel, QFrame, QSplitter, QTextEdit,
+                             QPushButton, QLineEdit, QScrollArea, QGraphicsDropShadowEffect)
+from PyQt6.QtGui import QColor, QPainter, QPen, QFont, QIcon, QCursor
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 
 # ייבוא מחלקת המנוע והאזנת ה-UDP מהקובץ הנפרד
@@ -35,16 +36,17 @@ class AttitudeIndicator(QWidget):
         w = self.width()
         h = self.height()
 
+        # עגול פינות של מכשיר הטיסה
         painter.setClipRect(0, 0, w, h)
         painter.setBrush(QColor("#1e293b"))
-        painter.drawRect(0, 0, w, h)
+        painter.drawRoundedRect(0, 0, w, h, 12, 12)
 
         painter.translate(w / 2, h / 2)
         painter.rotate(-self.roll)
 
         pitch_offset = self.pitch * 2.5
 
-        sky_color = QColor("#0284c7")
+        sky_color = QColor("#2F80ED")  # צבע ראשי לשמיים
         ground_color = QColor("#854d0e")
 
         painter.fillRect(-w, int(-h * 1.5 + pitch_offset), w * 2, int(h * 1.5), sky_color)
@@ -66,7 +68,7 @@ class AttitudeIndicator(QWidget):
         painter.resetTransform()
         painter.translate(w / 2, h / 2)
 
-        painter.setPen(QPen(QColor("#f59e0b"), 3))
+        painter.setPen(QPen(QColor("#F2C94C"), 3))  # שימוש בצבע צהוב-אזהרה מהפלטה
         painter.drawLine(-40, 0, -15, 0)
         painter.drawLine(15, 0, 40, 0)
         painter.drawLine(0, 0, 0, 15)
@@ -83,140 +85,219 @@ class AttitudeIndicator(QWidget):
 class MainWindow(QMainWindow):
     def __init__(self, nav_system: NavigationSystem):
         super().__init__()
-        self.nav = nav_system  # שמיעת נתונים ממנוע הניווט
+        self.nav = nav_system
 
-        self.setWindowTitle("Mission Control Center - Professional GCS")
+        self.setWindowTitle("UAV Command & Control - 2026 Edition")
         self.resize(1600, 900)
 
+        # סגנון כללי - משתמשים בפונט Inter וצבעי פרימיום
         self.setStyleSheet("""
-            QMainWindow { background-color: #0f172a; }
-            QLabel { font-family: 'Segoe UI', -apple-system, sans-serif; color: #e2e8f0; }
+            QMainWindow { background-color: #F5F7FA; font-family: 'Inter', -apple-system, sans-serif; }
+            QLabel { color: #202124; }
             QFrame { border: none; }
-            QTabWidget::pane { border: 1px solid #334155; border-radius: 4px; background: #0b0f19; }
-            QTabBar::tab { background: #1e293b; color: #94a3b8; padding: 8px 16px; border-radius: 4px 4px 0 0; margin-right: 2px; font-weight: bold; }
-            QTabBar::tab:selected { background: #38bdf8; color: #0f172a; }
-            QTextEdit { background-color: #0b0f19; color: #10b981; font-family: 'Consolas', monospace; border: none; padding: 10px; }
+            QTextEdit { background-color: #F5F7FA; color: #7A7A7A; font-family: 'Consolas', monospace; border: none; padding: 10px; border-radius: 8px;}
+            QPushButton { font-family: 'Inter', sans-serif; font-weight: bold; border-radius: 12px; padding: 8px 16px; transition: 0.3s;}
+            QPushButton:hover { opacity: 0.8; }
+            QLineEdit { background: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 12px; padding: 8px 12px; color: #202124; }
         """)
 
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
-        root_layout = QVBoxLayout(central_widget)
-        root_layout.setContentsMargins(10, 10, 10, 10)
-        root_layout.setSpacing(10)
+        root_layout = QHBoxLayout(central_widget)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
 
-        # TOP MISSION BAR
-        header_frame = QFrame()
-        header_frame.setStyleSheet("background: #1e293b; border-radius: 6px;")
-        header_layout = QHBoxLayout(header_frame)
-        header_layout.setContentsMargins(16, 8, 16, 8)
+        # ---------------------------------------------------------
+        # 1. LEFT SIDEBAR (64px)
+        # ---------------------------------------------------------
+        sidebar = QFrame()
+        sidebar.setFixedWidth(72)
+        sidebar.setStyleSheet("background-color: rgba(255, 255, 255, 0.8); border-right: 1px solid #E2E8F0;")
+        sidebar_layout = QVBoxLayout(sidebar)
+        sidebar_layout.setContentsMargins(10, 24, 10, 24)
+        sidebar_layout.setSpacing(24)
 
-        sys_title = QLabel("MISSION CONTROL ALFA")
-        sys_title.setStyleSheet("font-size: 16px; font-weight: 800; color: #f8fafc; letter-spacing: 1px;")
+        # כפתורי תפריט (אייקונים טקסטואליים מודרניים)
+        btn_style = """
+            QPushButton { background: transparent; color: #7A7A7A; font-size: 20px; border-radius: 12px; height: 48px; width: 48px;}
+            QPushButton:hover { background: #E2E8F0; color: #2F80ED; }
+            QPushButton:checked { background: #2F80ED; color: #FFFFFF; }
+        """
 
-        self.pulse_indicator = QLabel("● LIVE")
-        self.pulse_indicator.setStyleSheet("color: #64748b; font-weight: 900; font-size: 14px;")
+        logo_label = QLabel("🚀")
+        logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        logo_label.setStyleSheet("font-size: 28px; margin-bottom: 20px;")
+        sidebar_layout.addWidget(logo_label)
 
-        self.lbl_top_status = QLabel("UAV: OFFLINE")
-        self.lbl_top_status.setStyleSheet("background: #ef4444; color: white; padding: 4px 12px; border-radius: 4px; font-weight: bold;")
+        menus = [("🌍", True), ("📊", False), ("⚙️", False), ("📝", False)]
+        for icon, checked in menus:
+            btn = QPushButton(icon)
+            btn.setCheckable(True)
+            btn.setChecked(checked)
+            btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+            btn.setStyleSheet(btn_style)
+            sidebar_layout.addWidget(btn)
+
+        sidebar_layout.addStretch()
+
+        # User Avatar
+        avatar = QLabel("👤")
+        avatar.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        avatar.setStyleSheet("font-size: 24px; background: #E2E8F0; border-radius: 24px; height: 48px; width: 48px;")
+        sidebar_layout.addWidget(avatar)
+
+        root_layout.addWidget(sidebar)
+
+        # ---------------------------------------------------------
+        # 2. CENTER INFORMATION PANEL (380px)
+        # ---------------------------------------------------------
+        center_panel = QFrame()
+        center_panel.setFixedWidth(380)
+        center_panel.setStyleSheet("background-color: #F5F7FA;")
+        center_layout = QVBoxLayout(center_panel)
+        center_layout.setContentsMargins(20, 24, 20, 24)
+        center_layout.setSpacing(20)
+
+        # Header Panel
+        header_layout = QHBoxLayout()
+        sys_title = QLabel("Telemetry")
+        sys_title.setStyleSheet("font-size: 22px; font-weight: 800; color: #202124;")
+        self.lbl_top_status = QLabel("OFFLINE")
+        self.lbl_top_status.setStyleSheet(
+            "background: #EB5757; color: white; padding: 4px 12px; border-radius: 12px; font-weight: bold; font-size: 12px;")
 
         header_layout.addWidget(sys_title)
         header_layout.addStretch()
-        header_layout.addWidget(self.pulse_indicator)
-        header_layout.addSpacing(20)
         header_layout.addWidget(self.lbl_top_status)
-        root_layout.addWidget(header_frame)
+        center_layout.addLayout(header_layout)
 
-        # MAIN SPLITTER
-        main_splitter = QSplitter(Qt.Orientation.Horizontal)
+        # Scrollable area for cards
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        scroll_content = QWidget()
+        scroll_content.setStyleSheet("background: transparent;")
+        scroll_layout = QVBoxLayout(scroll_content)
+        scroll_layout.setContentsMargins(0, 0, 0, 0)
+        scroll_layout.setSpacing(16)
 
-        # LEFT PANEL
-        left_panel = QFrame()
-        left_panel.setStyleSheet("background: #1e293b; border-radius: 6px;")
-        left_layout = QVBoxLayout(left_panel)
-        left_layout.setContentsMargins(16, 16, 16, 16)
+        # Card 1: Primary Flight Data
+        card_pfd = self.create_card()
+        pfd_layout = QVBoxLayout(card_pfd)
+        row_telemetry = QHBoxLayout()
 
-        title_pfd = QLabel("PRIMARY FLIGHT DATA")
-        title_pfd.setStyleSheet("color: #94a3b8; font-weight: bold; letter-spacing: 1px; font-size: 11px;")
-        left_layout.addWidget(title_pfd)
-
+        # Speed
+        vbox_speed = QVBoxLayout()
         self.lbl_speed_val = QLabel("0.0")
-        self.lbl_speed_val.setStyleSheet("font-size: 42px; font-weight: 900; color: #38bdf8;")
-        self.lbl_speed_unit = QLabel("GROUND SPEED (km/h)")
-        self.lbl_speed_unit.setStyleSheet("color: #64748b; font-weight: bold;")
+        self.lbl_speed_val.setStyleSheet("font-size: 36px; font-weight: 900; color: #2F80ED;")
+        lbl_speed_title = QLabel("Speed (km/h)")
+        lbl_speed_title.setStyleSheet("color: #7A7A7A; font-weight: 600; font-size: 12px;")
+        vbox_speed.addWidget(self.lbl_speed_val)
+        vbox_speed.addWidget(lbl_speed_title)
 
+        # Heading
+        vbox_hdg = QVBoxLayout()
         self.lbl_hdg_val = QLabel("000°")
-        self.lbl_hdg_val.setStyleSheet("font-size: 42px; font-weight: 900; color: #a78bfa;")
-        self.lbl_hdg_unit = QLabel("HEADING")
-        self.lbl_hdg_unit.setStyleSheet("color: #64748b; font-weight: bold;")
+        self.lbl_hdg_val.setStyleSheet("font-size: 36px; font-weight: 900; color: #202124;")
+        lbl_hdg_title = QLabel("Heading")
+        lbl_hdg_title.setStyleSheet("color: #7A7A7A; font-weight: 600; font-size: 12px;")
+        vbox_hdg.addWidget(self.lbl_hdg_val)
+        vbox_hdg.addWidget(lbl_hdg_title)
 
-        left_layout.addWidget(self.lbl_speed_val)
-        left_layout.addWidget(self.lbl_speed_unit)
-        left_layout.addSpacing(15)
-        left_layout.addWidget(self.lbl_hdg_val)
-        left_layout.addWidget(self.lbl_hdg_unit)
-        left_layout.addSpacing(25)
+        row_telemetry.addLayout(vbox_speed)
+        row_telemetry.addStretch()
+        row_telemetry.addLayout(vbox_hdg)
 
+        pfd_layout.addLayout(row_telemetry)
+        pfd_layout.addSpacing(15)
         self.horizon = AttitudeIndicator()
-        left_layout.addWidget(self.horizon)
-        left_layout.addStretch()
+        pfd_layout.addWidget(self.horizon)
+        scroll_layout.addWidget(card_pfd)
 
-        # CENTER PANEL
-        center_splitter = QSplitter(Qt.Orientation.Vertical)
+        # Card 2: System Health & Network
+        card_health = self.create_card()
+        health_layout = QVBoxLayout(card_health)
+        lbl_health_title = QLabel("System Health")
+        lbl_health_title.setStyleSheet("font-size: 14px; font-weight: bold; color: #202124;")
+        health_layout.addWidget(lbl_health_title)
+        health_layout.addSpacing(10)
 
-        map_frame = QFrame()
-        map_frame.setStyleSheet("background: #0f172a; border-radius: 6px;")
-        map_layout = QVBoxLayout(map_frame)
-        map_layout.setContentsMargins(0, 0, 0, 0)
-        self.web_view = QWebEngineView()
-        map_layout.addWidget(self.web_view)
-        center_splitter.addWidget(map_frame)
+        self.ind_link = self.create_status_row("Datalink (UDP)", health_layout)
+        self.ind_gps = self.create_status_row("GPS Lock", health_layout)
+        self.ind_ekf = self.create_status_row("EKF Filter", health_layout)
 
-        self.tabs = QTabWidget()
+        health_layout.addSpacing(15)
+
+        self.lbl_hdop = self.create_stat_row("HDOP", "--", health_layout)
+        self.lbl_pkts = self.create_stat_row("Packets", "0 Hz", health_layout)
+        self.lbl_latency = self.create_stat_row("Latency", "-- ms", health_layout)
+        scroll_layout.addWidget(card_health)
+
+        # Card 3: Events Log
+        card_events = self.create_card()
+        events_layout = QVBoxLayout(card_events)
+        lbl_events_title = QLabel("Mission Logs")
+        lbl_events_title.setStyleSheet("font-size: 14px; font-weight: bold; color: #202124;")
+        events_layout.addWidget(lbl_events_title)
+
         self.tab_events = QTextEdit()
         self.tab_events.setReadOnly(True)
-        self.tabs.addTab(self.tab_events, "MISSION EVENTS")
+        self.tab_events.setFixedHeight(120)
+        events_layout.addWidget(self.tab_events)
+        scroll_layout.addWidget(card_events)
 
-        self.tab_raw = QTextEdit()
-        self.tab_raw.setReadOnly(True)
-        self.tab_raw.setStyleSheet("background-color: #0b0f19; color: #94a3b8; font-family: 'Consolas', monospace;")
-        self.tabs.addTab(self.tab_raw, "RAW TELEMETRY")
+        scroll_layout.addStretch()
+        scroll.setWidget(scroll_content)
+        center_layout.addWidget(scroll)
+        root_layout.addWidget(center_panel)
 
-        center_splitter.addWidget(self.tabs)
-        center_splitter.setSizes([700, 200])
+        # ---------------------------------------------------------
+        # 3. RIGHT MAP AREA (Flexible Width)
+        # ---------------------------------------------------------
+        map_area = QWidget()
+        map_layout = QVBoxLayout(map_area)
+        map_layout.setContentsMargins(10, 24, 24, 24)
+        map_layout.setSpacing(16)
 
-        # RIGHT PANEL
-        right_panel = QFrame()
-        right_panel.setStyleSheet("background: #1e293b; border-radius: 6px;")
-        right_layout = QVBoxLayout(right_panel)
-        right_layout.setContentsMargins(16, 16, 16, 16)
-        right_layout.setSpacing(12)
+        # Top Toolbar Area
+        toolbar_layout = QHBoxLayout()
 
-        title_health = QLabel("SYSTEM HEALTH")
-        title_health.setStyleSheet("color: #94a3b8; font-weight: bold; letter-spacing: 1px; font-size: 11px;")
-        right_layout.addWidget(title_health)
+        search_box = QLineEdit()
+        search_box.setPlaceholderText("Search coordinates, locations...")
+        search_box.setFixedWidth(250)
 
-        self.ind_link = self.create_health_indicator("UDP Datalink", right_layout)
-        self.ind_gps = self.create_health_indicator("GPS 3D Lock", right_layout)
-        self.ind_ekf = self.create_health_indicator("EKF Active", right_layout)
+        btn_new_mission = QPushButton("New Mission")
+        btn_new_mission.setStyleSheet("background: #2F80ED; color: white; border: none;")
+        btn_new_mission.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
 
-        right_layout.addSpacing(20)
-        title_net = QLabel("NETWORK STATS")
-        title_net.setStyleSheet("color: #94a3b8; font-weight: bold; letter-spacing: 1px; font-size: 11px;")
-        right_layout.addWidget(title_net)
+        btn_export = QPushButton("Export")
+        btn_export.setStyleSheet("background: #FFFFFF; color: #202124; border: 1px solid #E2E8F0;")
+        btn_export.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
 
-        self.lbl_hdop = self.create_stat_row("HDOP", "--", right_layout)
-        self.lbl_pkts = self.create_stat_row("Packets/Sec", "0 Hz", right_layout)
-        self.lbl_latency = self.create_stat_row("Latency", "-- ms", right_layout)
-        self.lbl_time = self.create_stat_row("UTC Time", "--:--:--", right_layout)
+        self.pulse_indicator = QLabel("● LIVE")
+        self.pulse_indicator.setStyleSheet("color: #7A7A7A; font-weight: 900; font-size: 14px;")
 
-        right_layout.addStretch()
+        toolbar_layout.addWidget(search_box)
+        toolbar_layout.addStretch()
+        toolbar_layout.addWidget(self.pulse_indicator)
+        toolbar_layout.addSpacing(16)
+        toolbar_layout.addWidget(btn_export)
+        toolbar_layout.addWidget(btn_new_mission)
 
-        main_splitter.addWidget(left_panel)
-        main_splitter.addWidget(center_splitter)
-        main_splitter.addWidget(right_panel)
-        main_splitter.setSizes([300, 1000, 300])
+        map_layout.addLayout(toolbar_layout)
 
-        root_layout.addWidget(main_splitter)
+        # Map Frame with Shadow
+        map_frame = self.create_card()
+        map_frame.setStyleSheet("background: #FFFFFF; border-radius: 18px;")
+        map_frame_layout = QVBoxLayout(map_frame)
+        map_frame_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.web_view = QWebEngineView()
+        self.web_view.setStyleSheet("border-radius: 18px;")
+        map_frame_layout.addWidget(self.web_view)
+
+        map_layout.addWidget(map_frame)
+        root_layout.addWidget(map_area)
 
         # INIT MAP & TIMERS
         self.map_ready = False
@@ -229,23 +310,39 @@ class MainWindow(QMainWindow):
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_gui)
 
-    def create_health_indicator(self, text, parent_layout):
+    def create_card(self):
+        """יצירת כרטיסייה לבנה עם צל רך המעניק מראה Glassmorphism עדין"""
+        card = QFrame()
+        card.setStyleSheet("background-color: #FFFFFF; border-radius: 18px;")
+
+        shadow = QGraphicsDropShadowEffect()
+        shadow.setBlurRadius(20)
+        shadow.setColor(QColor(0, 0, 0, 15))
+        shadow.setOffset(0, 4)
+        card.setGraphicsEffect(shadow)
+        return card
+
+    def create_status_row(self, text, parent_layout):
         row = QHBoxLayout()
-        lbl_icon = QLabel("🔴")
         lbl_text = QLabel(text)
-        lbl_text.setStyleSheet("font-weight: bold; font-size: 13px;")
-        row.addWidget(lbl_icon)
+        lbl_text.setStyleSheet("color: #7A7A7A; font-weight: 600; font-size: 13px;")
+
+        indicator = QLabel()
+        indicator.setFixedSize(12, 12)
+        indicator.setStyleSheet("background-color: #EB5757; border-radius: 6px;")
+
         row.addWidget(lbl_text)
         row.addStretch()
+        row.addWidget(indicator)
         parent_layout.addLayout(row)
-        return lbl_icon
+        return indicator
 
     def create_stat_row(self, title, val, parent_layout):
         row = QHBoxLayout()
         lbl_t = QLabel(title)
-        lbl_t.setStyleSheet("color: #94a3b8;")
+        lbl_t.setStyleSheet("color: #7A7A7A; font-size: 13px;")
         lbl_v = QLabel(val)
-        lbl_v.setStyleSheet("font-family: 'Consolas', monospace; font-weight: bold; color: #f8fafc;")
+        lbl_v.setStyleSheet("font-weight: bold; color: #202124; font-size: 13px;")
         row.addWidget(lbl_t)
         row.addStretch()
         row.addWidget(lbl_v)
@@ -253,6 +350,7 @@ class MainWindow(QMainWindow):
         return lbl_v
 
     def setup_base_map(self, center_lat, center_lon):
+        # מפת לווין כהה עם כפתורים צפים (Glassmorphism ב-CSS של המפה)
         html_content = f"""
         <!DOCTYPE html>
         <html>
@@ -260,26 +358,27 @@ class MainWindow(QMainWindow):
             <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css"/>
             <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
             <style>
-                html, body, #map {{ height: 100%; margin: 0; padding: 0; background-color: #0f172a; font-family: 'Segoe UI', sans-serif; }}
-                .leaflet-control-layers {{ border-radius: 4px !important; background: #1e293b !important; color: white !important; border: none !important; }}
+                html, body, #map {{ height: 100%; margin: 0; padding: 0; background-color: #000; font-family: 'Inter', sans-serif; border-radius: 18px; }}
+                .leaflet-control-layers {{ border-radius: 12px !important; background: rgba(255,255,255,0.9) !important; color: #202124 !important; border: none !important; box-shadow: 0 4px 15px rgba(0,0,0,0.1) !important; padding: 5px; }}
                 .drone-icon {{ background: transparent; border: none; overflow: visible; }}
                 .map-fab-container {{
                     position: absolute; bottom: 30px; right: 20px; z-index: 1000;
-                    display: flex; flex-direction: column; gap: 10px;
+                    display: flex; flex-direction: column; gap: 12px;
                 }}
                 .map-fab {{
-                    background: #38bdf8; color: #0f172a; border: none; border-radius: 50%;
-                    width: 44px; height: 44px; font-weight: bold; cursor: pointer;
-                    box-shadow: 0 4px 6px rgba(0,0,0,0.3); transition: 0.2s;
+                    background: rgba(255, 255, 255, 0.9); color: #202124; border: 1px solid rgba(255,255,255,0.2); border-radius: 12px;
+                    width: 48px; height: 48px; font-weight: bold; cursor: pointer;
+                    box-shadow: 0 4px 15px rgba(0,0,0,0.15); transition: 0.2s; font-size: 18px;
+                    backdrop-filter: blur(10px);
                 }}
-                .map-fab:hover {{ background: #0284c7; color: white; transform: scale(1.05); }}
+                .map-fab:hover {{ background: #FFFFFF; transform: translateY(-2px); }}
             </style>
         </head>
         <body>
             <div id="map"></div>
             <div class="map-fab-container">
                 <button class="map-fab" onclick="recenterMap()" title="Center UAV">🎯</button>
-                <button class="map-fab" onclick="goHome()" title="Go to Home" style="background:#10b981;">🏠</button>
+                <button class="map-fab" onclick="goHome()" title="Go to Home" style="color: #2F80ED;">🏠</button>
             </div>
             <script>
                 var tileOptions = {{ maxZoom: 20, updateWhenIdle: false, keepBuffer: 4, crossOrigin: true }};
@@ -287,12 +386,12 @@ class MainWindow(QMainWindow):
                 var osmLayer = L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', tileOptions);
 
                 var map = L.map('map', {{ center: [{center_lat}, {center_lon}], zoom: 18, layers: [satelliteLayer], zoomControl: false }});
-                L.control.zoom({{position: 'topright'}}).addTo(map);
+                L.control.zoom({{position: 'bottomright'}}).addTo(map);
                 L.control.scale({{imperial: false, metric: true, position: 'bottomleft'}}).addTo(map);
-                L.control.layers({{ "SATELLITE": satelliteLayer, "STREET MAP": osmLayer }}, null, {{position: 'topleft'}}).addTo(map);
+                L.control.layers({{ "Dark Satellite": satelliteLayer, "Street Map": osmLayer }}, null, {{position: 'topleft'}}).addTo(map);
 
-                var ekfPath = L.polyline([], {{color: '#38bdf8', weight: 4, opacity: 0.8}}).addTo(map);
-                var accuracyCircle = L.circle([{center_lat}, {center_lon}], {{radius: 0, color: 'rgba(56, 189, 248, 0.4)', fillOpacity: 0.1, weight: 1}}).addTo(map);
+                var ekfPath = L.polyline([], {{color: '#2F80ED', weight: 4, opacity: 0.9}}).addTo(map);
+                var accuracyCircle = L.circle([{center_lat}, {center_lon}], {{radius: 0, color: '#2F80ED', fillOpacity: 0.15, weight: 1}}).addTo(map);
 
                 var homeMarker = null;
                 var dronePos = [{center_lat}, {center_lon}];
@@ -303,17 +402,17 @@ class MainWindow(QMainWindow):
                     return L.divIcon({{
                         className: 'drone-icon',
                         html: `<div style="transform: rotate(${{heading}}deg); transform-origin: 50% 70%; width: 100px; height: 100px; margin-left: -50px; margin-top: -70px;">
-                                 <polygon points="50,70 10,0 90,0" fill="url(#grad)" opacity="0.4"/>
+                                 <polygon points="50,70 10,0 90,0" fill="url(#grad)" opacity="0.6"/>
                                  <svg width="0" height="0">
                                     <defs>
                                       <linearGradient id="grad" x1="0%" y1="100%" x2="0%" y2="0%">
-                                        <stop offset="0%" style="stop-color:#38bdf8;stop-opacity:1" />
-                                        <stop offset="100%" style="stop-color:#38bdf8;stop-opacity:0" />
+                                        <stop offset="0%" style="stop-color:#2F80ED;stop-opacity:1" />
+                                        <stop offset="100%" style="stop-color:#2F80ED;stop-opacity:0" />
                                       </linearGradient>
                                     </defs>
                                  </svg>
                                  <svg viewBox="0 0 24 24" width="36" height="36" style="position:absolute; top:52px; left:32px;">
-                                    <path d="M12,2L4.5,20.3L5.2,21L12,18L18.8,21L19.5,20.3L12,2z" fill="#10b981" stroke="#ffffff" stroke-width="1"/>
+                                    <path d="M12,2L4.5,20.3L5.2,21L12,18L18.8,21L19.5,20.3L12,2z" fill="#FFFFFF" stroke="#2F80ED" stroke-width="2"/>
                                  </svg>
                                </div>`,
                         iconSize: [0, 0]
@@ -341,7 +440,7 @@ class MainWindow(QMainWindow):
 
                     if (homeLat !== null && homeLon !== null && homeMarker === null) {{
                         homePos = [homeLat, homeLon];
-                        var hIcon = L.divIcon({{html: '<div style="font-size:20px;">🏠</div>', className: '', iconSize:[20,20], iconAnchor:[10,20]}});
+                        var hIcon = L.divIcon({{html: '<div style="font-size:24px; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.5));">🏠</div>', className: '', iconSize:[24,24], iconAnchor:[12,24]}});
                         homeMarker = L.marker(homePos, {{icon: hIcon}}).addTo(map);
                     }}
 
@@ -388,39 +487,39 @@ class MainWindow(QMainWindow):
                     self.tab_events.append(e)
                 self.last_handled_events = len(self.nav.events)
 
-            raw_str = f"Lat: {self.nav.raw_gps_coords[-1][0]:.6f}, Lon: {self.nav.raw_gps_coords[-1][1]:.6f}\nPitch: {pitch:.1f}, Roll: {roll:.1f}\nHDOP: {hdop:.2f}" if self.nav.raw_gps_coords else "No raw data."
-
         # Connection Pulse & Status
         if is_active:
             self.pulse_state = not self.pulse_state
-            color = "#10b981" if self.pulse_state else "#064e3b"
+            color = "#27AE60" if self.pulse_state else "#7A7A7A"
             self.pulse_indicator.setStyleSheet(f"color: {color}; font-weight: 900; font-size: 14px;")
-            self.lbl_top_status.setText(f"UAV: {status}")
-            self.lbl_top_status.setStyleSheet("background: #10b981; color: white; padding: 4px 12px; border-radius: 4px; font-weight: bold;")
-            self.ind_link.setText("🟢")
+            self.lbl_top_status.setText(f"{status}")
+            self.lbl_top_status.setStyleSheet(
+                "background: #27AE60; color: white; padding: 4px 12px; border-radius: 12px; font-weight: bold; font-size: 12px;")
+            self.ind_link.setStyleSheet("background-color: #27AE60; border-radius: 6px;")
         else:
-            self.pulse_indicator.setStyleSheet("color: #334155; font-weight: 900; font-size: 14px;")
-            self.lbl_top_status.setText("UAV: OFFLINE")
-            self.lbl_top_status.setStyleSheet("background: #ef4444; color: white; padding: 4px 12px; border-radius: 4px; font-weight: bold;")
-            self.ind_link.setText("🔴")
+            self.pulse_indicator.setStyleSheet("color: #7A7A7A; font-weight: 900; font-size: 14px;")
+            self.lbl_top_status.setText("OFFLINE")
+            self.lbl_top_status.setStyleSheet(
+                "background: #EB5757; color: white; padding: 4px 12px; border-radius: 12px; font-weight: bold; font-size: 12px;")
+            self.ind_link.setStyleSheet("background-color: #EB5757; border-radius: 6px;")
 
-        # PFD
+        # PFD (Primary Flight Data)
         self.lbl_speed_val.setText(f"{speed:.1f}")
         self.lbl_hdg_val.setText(f"{heading:03.0f}°")
         self.horizon.set_attitude(pitch, roll)
 
         # Health Dashboard
-        self.ind_gps.setText("🟢" if gps_valid else "🔴")
-        self.ind_ekf.setText("🟢" if status == "ARMED" else "🟡")
+        self.ind_gps.setStyleSheet(
+            "background-color: #27AE60; border-radius: 6px;" if gps_valid else "background-color: #EB5757; border-radius: 6px;")
+        if status == "ARMED":
+            self.ind_ekf.setStyleSheet("background-color: #27AE60; border-radius: 6px;")
+        else:
+            self.ind_ekf.setStyleSheet("background-color: #F2C94C; border-radius: 6px;")  # Warning/Standby
 
         # Network Stats
         self.lbl_hdop.setText(f"{hdop:.2f}")
         self.lbl_pkts.setText(f"{pkts_sec:.1f} Hz")
         self.lbl_latency.setText(f"{dt_packet * 1000:.0f} ms" if is_active else "-- ms")
-        self.lbl_time.setText(self.nav.gps_time_str)
-
-        # Raw Tab
-        self.tab_raw.setText(raw_str)
 
         # Map Update
         if self.map_ready and is_active:
@@ -438,13 +537,9 @@ class MainWindow(QMainWindow):
 # Main Entry Point
 # ==========================================
 if __name__ == '__main__':
-    # 1. יצירת מופע של מנוע הניווט
     nav = NavigationSystem()
-
-    # 2. הפעלת ה-UDP Listener ברקע
     start_udp_listener(nav, port=4210)
 
-    # 3. הפעלת ה-GUI
     app = QApplication(sys.argv)
     window = MainWindow(nav)
     window.show()
