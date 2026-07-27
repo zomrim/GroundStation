@@ -7,7 +7,7 @@ from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QLabel, QFrame, QTextEdit, QStackedWidget,
                              QPushButton, QLineEdit)
-from PyQt6.QtGui import QColor, QPainter, QPen, QCursor, QTextCursor
+from PyQt6.QtGui import QColor, QPainter, QPen, QCursor, QTextCursor, QFont, QPainterPath
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 
 # ייבוא מחלקת המנוע והאזנת ה-UDP מהקובץ הנפרד
@@ -15,18 +15,24 @@ from engine import NavigationSystem, start_udp_listener
 
 
 # ==========================================
-# 1. Custom Artificial Horizon Widget
+# 1. Advanced Flight HUD (Attitude Indicator + Tapes)
 # ==========================================
-class AttitudeIndicator(QWidget):
+class AdvancedFlightHUD(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumSize(200, 200)
+        self.setMinimumSize(280, 220)
         self.pitch = 0.0
         self.roll = 0.0
+        self.yaw = 0.0
+        self.speed = 0.0
+        self.altitude = 0.0
 
-    def set_attitude(self, pitch, roll):
+    def set_telemetry(self, pitch, roll, yaw, speed, altitude=0.0):
         self.pitch = pitch
         self.roll = roll
+        self.yaw = yaw
+        self.speed = speed
+        self.altitude = altitude
         self.update()
 
     def paintEvent(self, event):
@@ -36,46 +42,91 @@ class AttitudeIndicator(QWidget):
         w = self.width()
         h = self.height()
 
+        # מסגרת רקע מעוגלת
         painter.setClipRect(0, 0, w, h)
-        painter.setBrush(QColor("#1e293b"))
-        painter.drawRoundedRect(0, 0, w, h, 12, 12)
+        painter.setBrush(QColor("#0F172A"))
+        painter.setPen(QPen(QColor("#334155"), 1))
+        painter.drawRoundedRect(0, 0, w, h, 14, 14)
 
-        painter.translate(w / 2, h / 2)
+        # מרכז ה-HUD
+        cx = w / 2
+        cy = h / 2 - 10
+        hud_r = min(w, h) * 0.38
+
+        # --- רנדור האופק המלאכותי ---
+        painter.save()
+        painter.translate(cx, cy)
         painter.rotate(-self.roll)
 
-        pitch_offset = self.pitch * 2.5
-
+        pitch_offset = self.pitch * 2.2
         sky_color = QColor("#2F80ED")
-        ground_color = QColor("#854d0e")
+        ground_color = QColor("#9A3412")
 
-        painter.fillRect(-w, int(-h * 1.5 + pitch_offset), w * 2, int(h * 1.5), sky_color)
-        painter.fillRect(-w, int(pitch_offset), w * 2, int(h * 1.5), ground_color)
+        # גזירת האזור של העיגול המרכזי באמצעות QPainterPath תקני
+        clip_path = QPainterPath()
+        clip_path.addEllipse(-hud_r, -hud_r, hud_r * 2, hud_r * 2)
+        painter.setClipPath(clip_path)
 
-        painter.setPen(QPen(QColor("#ffffff"), 2))
-        painter.drawLine(-w, int(pitch_offset), w, int(pitch_offset))
+        painter.fillRect(int(-hud_r * 1.5), int(-hud_r * 2 + pitch_offset), int(hud_r * 3), int(hud_r * 2), sky_color)
+        painter.fillRect(int(-hud_r * 1.5), int(pitch_offset), int(hud_r * 3), int(hud_r * 2), ground_color)
 
-        painter.setPen(QPen(QColor("#ffffff"), 1))
+        # קו האופק ושנתות Pitch
+        painter.setPen(QPen(QColor("#FFFFFF"), 2))
+        painter.drawLine(int(-hud_r), int(pitch_offset), int(hud_r), int(pitch_offset))
+
+        painter.setPen(QPen(QColor("#FFFFFF"), 1))
+        font_pitch = QFont("Inter", 8)
+        painter.setFont(font_pitch)
+
         for p in range(-60, 61, 15):
             if p == 0: continue
-            y_pos = int(pitch_offset - (p * 2.5))
-            width = 30 if p % 30 == 0 else 15
-            painter.drawLine(-width, y_pos, width, y_pos)
+            y_pos = int(pitch_offset - (p * 2.2))
+            bar_w = 20 if p % 30 == 0 else 10
+            painter.drawLine(-bar_w, y_pos, bar_w, y_pos)
             if p % 30 == 0:
-                painter.drawText(width + 5, y_pos + 4, str(p))
-                painter.drawText(-width - 25, y_pos + 4, str(p))
+                painter.drawText(bar_w + 3, y_pos + 4, str(p))
+                painter.drawText(-bar_w - 20, y_pos + 4, str(p))
 
-        painter.resetTransform()
-        painter.translate(w / 2, h / 2)
+        painter.restore()
 
-        painter.setPen(QPen(QColor("#F2C94C"), 3))
-        painter.drawLine(-40, 0, -15, 0)
-        painter.drawLine(15, 0, 40, 0)
-        painter.drawLine(0, 0, 0, 15)
-        painter.drawPoint(0, 0)
+        # --- כוונת הרחפן המרכזית (Aircraft Reticle) ---
+        painter.setPen(QPen(QColor("#F59E0B"), 3))
+        painter.drawLine(int(cx - 30), int(cy), int(cx - 10), int(cy))
+        painter.drawLine(int(cx + 10), int(cy), int(cx + 30), int(cy))
+        painter.drawLine(int(cx), int(cy - 5), int(cx), int(cy + 10))
 
-        painter.resetTransform()
-        painter.setPen(QPen(QColor("#ffffff"), 2))
-        painter.drawArc(10, 10, w - 20, h - 20, 30 * 16, 120 * 16)
+        # --- סרגל מהירות משמאל (Speed Tape) ---
+        painter.setBrush(QColor("rgba(15, 23, 42, 0.75)"))
+        painter.setPen(QPen(QColor("#334155"), 1))
+        painter.drawRoundedRect(10, 20, 42, int(h - 60), 6, 6)
+
+        painter.setPen(QPen(QColor("#38BDF8"), 1))
+        font_tape = QFont("Consolas", 9, QFont.Weight.Bold)
+        painter.setFont(font_tape)
+        painter.drawText(14, 36, "SPD")
+        painter.setPen(QPen(QColor("#FFFFFF"), 1))
+        painter.drawText(14, 56, f"{self.speed:.1f}")
+
+        # --- סרגל גובה מימין (Altitude Tape) ---
+        painter.setBrush(QColor("rgba(15, 23, 42, 0.75)"))
+        painter.setPen(QPen(QColor("#334155"), 1))
+        painter.drawRoundedRect(int(w - 52), 20, 42, int(h - 60), 6, 6)
+
+        painter.setPen(QPen(QColor("#10B981"), 1))
+        painter.setFont(font_tape)
+        painter.drawText(int(w - 48), 36, "ALT")
+        painter.setPen(QPen(QColor("#FFFFFF"), 1))
+        painter.drawText(int(w - 48), 56, f"{self.altitude:.1f}m")
+
+        # --- נתונים דיגיטליים בתחתית (Pitch / Roll / Yaw Numbers) ---
+        painter.setPen(QPen(QColor("#94A3B8"), 1))
+        font_bot = QFont("Inter", 9, QFont.Weight.Medium)
+        painter.setFont(font_bot)
+        bot_y = int(h - 12)
+
+        painter.drawText(15, bot_y, f"P: {self.pitch:+.1f}°")
+        painter.drawText(int(cx - 28), bot_y, f"R: {self.roll:+.1f}°")
+        painter.drawText(int(w - 75), bot_y, f"Y: {self.yaw:03.0f}°")
 
 
 # ==========================================
@@ -86,7 +137,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.nav = nav_system
 
-        self.setWindowTitle("UAV Command & Control - Ultra Fast GCS")
+        self.setWindowTitle("UAV Command & Control - Advanced Flight HUD")
         self.resize(1600, 900)
 
         self.setStyleSheet("""
@@ -105,9 +156,7 @@ class MainWindow(QMainWindow):
         root_layout.setContentsMargins(0, 0, 0, 0)
         root_layout.setSpacing(0)
 
-        # ---------------------------------------------------------
-        # 1. LEFT SIDEBAR (72px)
-        # ---------------------------------------------------------
+        # SIDEBAR
         sidebar = QFrame()
         sidebar.setFixedWidth(72)
         sidebar.setStyleSheet("background-color: #FFFFFF; border-right: 1px solid #E2E8F0;")
@@ -148,9 +197,7 @@ class MainWindow(QMainWindow):
         sidebar_layout.addWidget(avatar)
         root_layout.addWidget(sidebar)
 
-        # ---------------------------------------------------------
-        # 2. CENTER INFORMATION PANEL (380px)
-        # ---------------------------------------------------------
+        # CENTER INFORMATION PANEL
         center_panel = QFrame()
         center_panel.setFixedWidth(380)
         center_panel.setStyleSheet("background-color: #F8FAFC;")
@@ -162,7 +209,8 @@ class MainWindow(QMainWindow):
         self.sys_title = QLabel("Dashboard")
         self.sys_title.setStyleSheet("font-size: 22px; font-weight: 800; color: #0F172A;")
         self.lbl_top_status = QLabel("OFFLINE")
-        self.lbl_top_status.setStyleSheet("background: #EF4444; color: white; padding: 4px 12px; border-radius: 10px; font-weight: bold; font-size: 12px;")
+        self.lbl_top_status.setStyleSheet(
+            "background: #EF4444; color: white; padding: 4px 12px; border-radius: 10px; font-weight: bold; font-size: 12px;")
 
         header_layout.addWidget(self.sys_title)
         header_layout.addStretch()
@@ -171,7 +219,7 @@ class MainWindow(QMainWindow):
 
         self.stacked_widget = QStackedWidget()
 
-        # --- Page 0: Dashboard ---
+        # Page 0: Dashboard
         self.page_dashboard = QWidget()
         dash_layout = QVBoxLayout(self.page_dashboard)
         dash_layout.setContentsMargins(0, 0, 0, 0)
@@ -183,17 +231,17 @@ class MainWindow(QMainWindow):
 
         vbox_speed = QVBoxLayout()
         self.lbl_speed_val = QLabel("0.0")
-        self.lbl_speed_val.setStyleSheet("font-size: 36px; font-weight: 900; color: #2F80ED;")
+        self.lbl_speed_val.setStyleSheet("font-size: 32px; font-weight: 900; color: #2F80ED;")
         lbl_speed_title = QLabel("Speed (km/h)")
-        lbl_speed_title.setStyleSheet("color: #64748B; font-weight: 600; font-size: 12px;")
+        lbl_speed_title.setStyleSheet("color: #64748B; font-weight: 600; font-size: 11px;")
         vbox_speed.addWidget(self.lbl_speed_val)
         vbox_speed.addWidget(lbl_speed_title)
 
         vbox_hdg = QVBoxLayout()
         self.lbl_hdg_val = QLabel("000°")
-        self.lbl_hdg_val.setStyleSheet("font-size: 36px; font-weight: 900; color: #0F172A;")
+        self.lbl_hdg_val.setStyleSheet("font-size: 32px; font-weight: 900; color: #0F172A;")
         lbl_hdg_title = QLabel("Heading")
-        lbl_hdg_title.setStyleSheet("color: #64748B; font-weight: 600; font-size: 12px;")
+        lbl_hdg_title.setStyleSheet("color: #64748B; font-weight: 600; font-size: 11px;")
         vbox_hdg.addWidget(self.lbl_hdg_val)
         vbox_hdg.addWidget(lbl_hdg_title)
 
@@ -202,8 +250,9 @@ class MainWindow(QMainWindow):
         row_telemetry.addLayout(vbox_hdg)
 
         pfd_layout.addLayout(row_telemetry)
-        pfd_layout.addSpacing(15)
-        self.horizon = AttitudeIndicator()
+        pfd_layout.addSpacing(10)
+
+        self.horizon = AdvancedFlightHUD()
         pfd_layout.addWidget(self.horizon)
         dash_layout.addWidget(card_pfd)
 
@@ -226,7 +275,7 @@ class MainWindow(QMainWindow):
         dash_layout.addWidget(card_health)
         dash_layout.addStretch()
 
-        # --- Page 1: Raw Telemetry ---
+        # Page 1: Raw Telemetry
         self.page_raw = QWidget()
         raw_layout = QVBoxLayout(self.page_raw)
         raw_layout.setContentsMargins(0, 0, 0, 0)
@@ -240,7 +289,7 @@ class MainWindow(QMainWindow):
         card_raw_layout.addWidget(self.tab_raw)
         raw_layout.addWidget(card_raw)
 
-        # --- Page 2: Logs ---
+        # Page 2: Logs
         self.page_logs = QWidget()
         logs_layout = QVBoxLayout(self.page_logs)
         logs_layout.setContentsMargins(0, 0, 0, 0)
@@ -250,7 +299,8 @@ class MainWindow(QMainWindow):
         lbl_events_title.setStyleSheet("font-size: 14px; font-weight: bold; color: #0F172A;")
         self.tab_events = QTextEdit()
         self.tab_events.setReadOnly(True)
-        self.tab_events.setStyleSheet("background-color: #0F172A; color: #10B981; font-family: 'Consolas', monospace; border-radius: 8px;")
+        self.tab_events.setStyleSheet(
+            "background-color: #0F172A; color: #10B981; font-family: 'Consolas', monospace; border-radius: 8px;")
         events_layout.addWidget(lbl_events_title)
         events_layout.addWidget(self.tab_events)
         logs_layout.addWidget(card_events)
@@ -262,9 +312,7 @@ class MainWindow(QMainWindow):
         center_layout.addWidget(self.stacked_widget)
         root_layout.addWidget(center_panel)
 
-        # ---------------------------------------------------------
-        # 3. RIGHT MAP AREA (Flexible Width)
-        # ---------------------------------------------------------
+        # RIGHT MAP AREA
         map_area = QWidget()
         map_layout = QVBoxLayout(map_area)
         map_layout.setContentsMargins(10, 24, 24, 24)
@@ -337,7 +385,6 @@ class MainWindow(QMainWindow):
             self.search_box.clear()
 
     def create_card(self):
-        """כרטיסייה מודרנית עם מסגרת עדינה (ללא QGraphicsDropShadowEffect שהאיר את ה-CPU)"""
         card = QFrame()
         card.setStyleSheet("background-color: #FFFFFF; border-radius: 16px; border: 1px solid #E2E8F0;")
         return card
@@ -368,7 +415,6 @@ class MainWindow(QMainWindow):
         return lbl_v
 
     def setup_base_map(self, center_lat, center_lon):
-        # מפה נקייה ומהירה בדיוק כמו בקוד המקורי, עם קריאת JS יחידה ומרוכזת
         html_content = f"""
         <!DOCTYPE html>
         <html>
@@ -379,6 +425,18 @@ class MainWindow(QMainWindow):
                 html, body, #map {{ height: 100%; margin: 0; padding: 0; background-color: #0F172A; font-family: 'Inter', sans-serif; border-radius: 16px; }}
                 .leaflet-control-layers {{ border-radius: 8px !important; background: #1E293B !important; color: white !important; border: none !important; }}
                 .drone-icon {{ background: transparent; border: none; overflow: visible; }}
+
+                .map-legend {{
+                    position: absolute; bottom: 30px; left: 20px; z-index: 1000;
+                    background: rgba(15, 23, 42, 0.85); border: 1px solid rgba(255,255,255,0.15);
+                    border-radius: 12px; padding: 12px 16px; color: #FFFFFF; font-size: 12px;
+                    display: flex; flex-direction: column; gap: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+                }}
+                .legend-item {{ display: flex; align-items: center; gap: 10px; font-weight: 600; }}
+                .legend-line-ekf {{ width: 20px; height: 4px; background: #2F80ED; border-radius: 2px; }}
+                .legend-line-raw {{ width: 20px; height: 0px; border-top: 3px dashed #EB5757; }}
+                .nav-mode-badge {{ font-size: 10px; font-weight: bold; padding: 2px 6px; border-radius: 6px; text-transform: uppercase; margin-top: 2px; text-align: center; }}
+
                 .map-fab-container {{
                     position: absolute; bottom: 30px; right: 20px; z-index: 1000;
                     display: flex; flex-direction: column; gap: 10px;
@@ -393,6 +451,21 @@ class MainWindow(QMainWindow):
         </head>
         <body>
             <div id="map"></div>
+
+            <div class="map-legend">
+                <div class="legend-item">
+                    <div class="legend-line-ekf"></div>
+                    <span>EKF Trajectory (Filter)</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-line-raw"></div>
+                    <span>Raw GPS Trajectory</span>
+                </div>
+                <div id="navModeBadge" class="nav-mode-badge" style="background: rgba(39, 174, 96, 0.2); color: #27AE60;">
+                    GPS LOCK ACTIVE
+                </div>
+            </div>
+
             <div class="map-fab-container">
                 <button class="map-fab" onclick="recenterMap()" title="Center UAV">🎯</button>
                 <button class="map-fab" onclick="goHome()" title="Go to Home" style="color:#10B981;">🏠</button>
@@ -407,7 +480,9 @@ class MainWindow(QMainWindow):
                 L.control.scale({{imperial: false, metric: true, position: 'bottomleft'}}).addTo(map);
                 L.control.layers({{ "SATELLITE": satelliteLayer, "STREET MAP": osmLayer }}, null, {{position: 'topleft'}}).addTo(map);
 
-                var ekfPath = L.polyline([], {{color: '#2F80ED', weight: 4, opacity: 0.8}}).addTo(map);
+                var ekfPath = L.polyline([], {{color: '#2F80ED', weight: 4, opacity: 0.9}}).addTo(map);
+                var rawGpsPath = L.polyline([], {{color: '#EB5757', weight: 3, opacity: 0.7, dashArray: '5, 8'}}).addTo(map);
+
                 var accuracyCircle = L.circle([{center_lat}, {center_lon}], {{radius: 0, color: 'rgba(47, 128, 237, 0.4)', fillOpacity: 0.1, weight: 1}}).addTo(map);
 
                 var homeMarker = null;
@@ -443,11 +518,14 @@ class MainWindow(QMainWindow):
                 function recenterMap() {{ autoPan = true; map.panTo(dronePos, {{animate: true}}); }}
                 function goHome() {{ if(homePos) map.panTo(homePos, {{animate: true}}); autoPan = false; }}
 
-                // פונקציית העדכון המרכזית (כמו בקוד המקורי - קריאה אחת בלבד מ-Python)
-                function updateMapData(ekfCoords, heading, hdop, homeLat, homeLon) {{
+                function updateMapData(ekfCoords, rawCoords, heading, hdop, homeLat, homeLon, gpsValid) {{
                     if (ekfCoords.length === 0) return;
 
                     ekfPath.setLatLngs(ekfCoords);
+                    if (rawCoords.length > 0) {{
+                        rawGpsPath.setLatLngs(rawCoords);
+                    }}
+
                     dronePos = ekfCoords[ekfCoords.length - 1];
 
                     droneMarker.setLatLng(dronePos);
@@ -455,6 +533,19 @@ class MainWindow(QMainWindow):
 
                     accuracyCircle.setLatLng(dronePos);
                     accuracyCircle.setRadius(hdop * 3.0);
+
+                    var badge = document.getElementById('navModeBadge');
+                    if (gpsValid) {{
+                        badge.innerText = 'GPS LOCK ACTIVE';
+                        badge.style.background = 'rgba(39, 174, 96, 0.2)';
+                        badge.style.color = '#27AE60';
+                        accuracyCircle.setStyle({{color: 'rgba(47, 128, 237, 0.4)', fillColor: '#2F80ED'}});
+                    }} else {{
+                        badge.innerText = '⚠ DEAD RECKONING / JAMMED';
+                        badge.style.background = 'rgba(235, 87, 87, 0.25)';
+                        badge.style.color = '#EB5757';
+                        accuracyCircle.setStyle({{color: '#EB5757', fillColor: '#EB5757'}});
+                    }}
 
                     if (homeLat !== null && homeLon !== null && homeMarker === null) {{
                         homePos = [homeLat, homeLon];
@@ -477,7 +568,7 @@ class MainWindow(QMainWindow):
     def on_map_loaded(self, success):
         if success:
             self.map_ready = True
-            self.timer.start(100) # 10Hz Refresh
+            self.timer.start(100)
 
     def update_gui(self):
         with self.nav.lock:
@@ -499,7 +590,6 @@ class MainWindow(QMainWindow):
             dt_start = now - self.nav.start_time
             pkts_sec = self.nav.packet_count / dt_start if dt_start > 0 else 0
 
-            # עדכון לוגים
             if len(self.nav.events) > self.last_handled_events:
                 new_events = self.nav.events[self.last_handled_events:]
                 for e in new_events:
@@ -507,7 +597,6 @@ class MainWindow(QMainWindow):
                 self.tab_events.moveCursor(QTextCursor.MoveOperation.End)
                 self.last_handled_events = len(self.nav.events)
 
-            # עדכון טלמטריה גולמית
             if self.nav.raw_gps_coords:
                 raw_str = (f"=== RAW SENSOR DATA ===\n"
                            f"Latitude:   {self.nav.raw_gps_coords[-1][0]:.7f}\n"
@@ -531,37 +620,46 @@ class MainWindow(QMainWindow):
             color = "#10B981" if self.pulse_state else "#64748B"
             self.pulse_indicator.setStyleSheet(f"color: {color}; font-weight: 900; font-size: 14px;")
             self.lbl_top_status.setText(f"{status}")
-            self.lbl_top_status.setStyleSheet("background: #10B981; color: white; padding: 4px 12px; border-radius: 10px; font-weight: bold; font-size: 12px;")
+            self.lbl_top_status.setStyleSheet(
+                "background: #10B981; color: white; padding: 4px 12px; border-radius: 10px; font-weight: bold; font-size: 12px;")
             self.ind_link.setStyleSheet("background-color: #10B981; border-radius: 6px;")
         else:
             self.pulse_indicator.setStyleSheet("color: #64748B; font-weight: 900; font-size: 14px;")
             self.lbl_top_status.setText("OFFLINE")
-            self.lbl_top_status.setStyleSheet("background: #EF4444; color: white; padding: 4px 12px; border-radius: 10px; font-weight: bold; font-size: 12px;")
+            self.lbl_top_status.setStyleSheet(
+                "background: #EF4444; color: white; padding: 4px 12px; border-radius: 10px; font-weight: bold; font-size: 12px;")
             self.ind_link.setStyleSheet("background-color: #EF4444; border-radius: 6px;")
 
-        # PFD
+        # PFD Telemetry Header & HUD Update
         self.lbl_speed_val.setText(f"{speed:.1f}")
         self.lbl_hdg_val.setText(f"{heading:03.0f}°")
-        self.horizon.set_attitude(pitch, roll)
+
+        self.horizon.set_telemetry(pitch, roll, heading, speed, altitude=0.0)
 
         # Health Indicators
-        self.ind_gps.setStyleSheet("background-color: #10B981; border-radius: 6px;" if gps_valid else "background-color: #EF4444; border-radius: 6px;")
-        self.ind_ekf.setStyleSheet("background-color: #10B981; border-radius: 6px;" if status == "ARMED" else "background-color: #F59E0B; border-radius: 6px;")
+        self.ind_gps.setStyleSheet(
+            "background-color: #10B981; border-radius: 6px;" if gps_valid else "background-color: #EF4444; border-radius: 6px;")
+        self.ind_ekf.setStyleSheet(
+            "background-color: #10B981; border-radius: 6px;" if status == "ARMED" else "background-color: #F59E0B; border-radius: 6px;")
 
         # Stats
         self.lbl_hdop.setText(f"{hdop:.2f}")
         self.lbl_pkts.setText(f"{pkts_sec:.1f} Hz")
         self.lbl_latency.setText(f"{dt_packet * 1000:.0f} ms" if is_active else "-- ms")
 
-        # MAP UPDATE - קריאה אחת בודדת כמו בקוד המקורי
+        # MAP UPDATE
         if self.map_ready and is_active:
             ekf_c = [[c[0], c[1]] for c in self.nav.ekf_coords if not np.isnan(c[0])]
+            raw_c = [[c[0], c[1]] for c in self.nav.raw_gps_coords if not np.isnan(c[0])]
 
             h_lat_str = str(home_l) if home_l is not None else "null"
             h_lon_str = str(home_lon) if home_lon is not None else "null"
+            gps_val_str = "true" if gps_valid else "false"
 
             ekf_json = json.dumps(ekf_c)
-            js_cmd = f"updateMapData({ekf_json}, {heading:.1f}, {hdop:.2f}, {h_lat_str}, {h_lon_str});"
+            raw_json = json.dumps(raw_c)
+
+            js_cmd = f"updateMapData({ekf_json}, {raw_json}, {heading:.1f}, {hdop:.2f}, {h_lat_str}, {h_lon_str}, {gps_val_str});"
             self.web_view.page().runJavaScript(js_cmd)
 
 
