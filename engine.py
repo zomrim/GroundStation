@@ -136,18 +136,30 @@ class NavigationSystem:
             pass
 
 
-def start_udp_listener(nav_system: NavigationSystem, port: int = 4210):
-    """מפעיל Thread שמקשיב לחבילות UDP ומזין את מערכת הניווט."""
+def start_udp_listener(nav_system: NavigationSystem, port: int = 4210, stop_event: threading.Event = None):
+    """מפעיל Thread שמקשיב לחבילות UDP ומזין את מערכת הניווט.
+
+    stop_event (optional): when provided and set, the loop exits cleanly and the
+    socket closes, allowing the GUI's Settings page to rebind on a different
+    port. Calling this exactly as before (no stop_event) preserves the original
+    always-on behavior -- this is a backward-compatible addition, not a rewrite.
+    """
     def udp_loop():
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.bind(("", port))
-        while True:
-            try:
-                data, addr = sock.recvfrom(1024)
-                nav_system.process_packet(data.decode('utf-8').strip())
-            except Exception:
-                pass
+        sock.settimeout(0.5)
+        try:
+            while stop_event is None or not stop_event.is_set():
+                try:
+                    data, addr = sock.recvfrom(1024)
+                    nav_system.process_packet(data.decode('utf-8').strip())
+                except socket.timeout:
+                    continue
+                except Exception:
+                    pass
+        finally:
+            sock.close()
 
     thread = threading.Thread(target=udp_loop, daemon=True)
     thread.start()

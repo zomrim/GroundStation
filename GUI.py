@@ -1,12 +1,14 @@
 import sys
 import time
 import json
+import threading
 import numpy as np
+from collections import deque
 
 from PyQt6.QtCore import Qt, QTimer, QByteArray, QSize
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QLabel, QFrame, QTextEdit, QStackedWidget,
-                             QPushButton, QLineEdit)
+                             QPushButton, QLineEdit, QFileDialog, QMessageBox, QButtonGroup)
 from PyQt6.QtGui import QColor, QPainter, QPen, QCursor, QTextCursor, QFont, QPainterPath, QIcon, QPixmap
 from PyQt6.QtSvg import QSvgRenderer
 from PyQt6.QtWebEngineWidgets import QWebEngineView
@@ -45,6 +47,18 @@ def mono_font(size: int, weight: QFont.Weight = QFont.Weight.Normal) -> QFont:
     return font
 
 
+def haversine_m(lat1, lon1, lat2, lon2) -> float:
+    """Great-circle distance in meters. Presentation-layer helper -- reads
+    coordinates the same way the rest of this file already does, doesn't touch
+    engine.py."""
+    R = 6371000.0
+    phi1, phi2 = np.radians(lat1), np.radians(lat2)
+    dphi = np.radians(lat2 - lat1)
+    dlambda = np.radians(lon2 - lon1)
+    a = np.sin(dphi / 2) ** 2 + np.cos(phi1) * np.cos(phi2) * np.sin(dlambda / 2) ** 2
+    return 2 * R * np.arcsin(np.sqrt(a))
+
+
 # ==========================================
 # 0b. SVG Icon Utility
 # ==========================================
@@ -65,8 +79,63 @@ SVG_ICONS = {
     "dashboard": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="7" height="9" x="3" y="3" rx="1"/><rect width="7" height="5" x="14" y="3" rx="1"/><rect width="7" height="9" x="14" y="12" rx="1"/><rect width="7" height="5" x="3" y="16" rx="1"/></svg>',
     "telemetry": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/></svg>',
     "logs": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" x2="8" y1="13" y2="13"/><line x1="16" x2="8" y1="17" y2="17"/></svg>',
+    "settings": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82A1.65 1.65 0 0 0 3 13.09H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>',
     "user": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>'
 }
+
+
+# ==========================================
+# 0c. Sparkline (recent-trend strip for live numeric readouts)
+# ==========================================
+class Sparkline(QWidget):
+    """Tiny inline trend line. Call push(value) each time a fresh sample
+    arrives; only push real, currently-valid samples -- pushing a stale or
+    placeholder value would just draw a misleading trend."""
+
+    def __init__(self, color_hex: str, max_points: int = 120, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(26)
+        self.color = QColor(color_hex)
+        self.values = deque(maxlen=max_points)
+
+    def push(self, value):
+        if value is None:
+            return
+        if isinstance(value, float) and np.isnan(value):
+            return
+        self.values.append(float(value))
+        self.update()
+
+    def clear_trend(self):
+        self.values.clear()
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+
+        if len(self.values) < 2:
+            painter.setPen(QPen(QColor(PALETTE["border"]), 1))
+            painter.drawLine(0, h - 3, w, h - 3)
+            return
+
+        vmin, vmax = min(self.values), max(self.values)
+        span = (vmax - vmin) or 1.0
+        n = len(self.values)
+        step = w / max(n - 1, 1)
+
+        path = QPainterPath()
+        for i, v in enumerate(self.values):
+            x = i * step
+            y = (h - 4) - ((v - vmin) / span) * (h - 6) + 1
+            if i == 0:
+                path.moveTo(x, y)
+            else:
+                path.lineTo(x, y)
+
+        painter.setPen(QPen(self.color, 1.6))
+        painter.drawPath(path)
 
 
 # ==========================================
@@ -81,13 +150,15 @@ class AdvancedFlightHUD(QWidget):
         self.yaw = 0.0
         self.speed = 0.0
         self.altitude = 0.0
+        self.altitude_valid = False
 
-    def set_telemetry(self, pitch, roll, yaw, speed, altitude=0.0):
+    def set_telemetry(self, pitch, roll, yaw, speed, altitude=0.0, altitude_valid=False):
         self.pitch = pitch
         self.roll = roll
         self.yaw = yaw
         self.speed = speed
         self.altitude = altitude
+        self.altitude_valid = altitude_valid
         self.update()
 
     def paintEvent(self, event):
@@ -162,12 +233,13 @@ class AdvancedFlightHUD(QWidget):
         painter.setPen(QPen(QColor(PALETTE["border"]), 1))
         painter.drawRoundedRect(int(w - 54), 15, 44, int(h - 50), 8, 8)
 
-        painter.setPen(QPen(QColor(PALETTE["success"]), 1))
+        painter.setPen(QPen(QColor(PALETTE["success"] if self.altitude_valid else PALETTE["muted"]), 1))
         painter.setFont(mono_font(8, QFont.Weight.Bold))
         painter.drawText(int(w - 50), 30, "ALT")
-        painter.setPen(QPen(QColor(PALETTE["text"]), 1))
+        painter.setPen(QPen(QColor(PALETTE["text"] if self.altitude_valid else PALETTE["muted"]), 1))
         painter.setFont(mono_font(9))
-        painter.drawText(int(w - 50), 48, f"{self.altitude:.1f}m")
+        alt_text = f"{self.altitude:.1f}m" if self.altitude_valid else "N/A"
+        painter.drawText(int(w - 50), 48, alt_text)
 
         # נתונים מספריים בתחתית
         painter.setPen(QPen(QColor(PALETTE["muted"]), 1))
@@ -182,9 +254,21 @@ class AdvancedFlightHUD(QWidget):
 # 2. Main Ground Control Station Window
 # ==========================================
 class MainWindow(QMainWindow):
-    def __init__(self, nav_system: NavigationSystem):
+    def __init__(self, nav_system: NavigationSystem, udp_port: int = 4210,
+                 udp_stop_event: threading.Event = None, udp_thread: threading.Thread = None):
         super().__init__()
         self.nav = nav_system
+
+        # Listener lifecycle, so the Settings page can rebind on a new port
+        # without restarting the whole application.
+        self.udp_port = udp_port
+        self.udp_stop_event = udp_stop_event
+        self.udp_thread = udp_thread
+
+        # Display-unit preferences (GUI-side only; nav's internal values stay
+        # in their native units, these only affect formatting).
+        self.unit_speed = "kmh"
+        self.unit_dist = "metric"
 
         self.setWindowTitle("UAV Ground Control Station - Fullscreen Edition")
         self.resize(1550, 880)
@@ -230,7 +314,7 @@ class MainWindow(QMainWindow):
         sidebar_layout.addSpacing(15)
 
         self.sidebar_btns = []
-        menus = [("dashboard", "Dashboard"), ("telemetry", "Raw Telemetry"), ("logs", "Mission Logs")]
+        menus = [("dashboard", "Dashboard"), ("telemetry", "Raw Telemetry"), ("logs", "Mission Logs"), ("settings", "Settings")]
 
         btn_style = f"""
             QPushButton {{ background: transparent; border-radius: 10px; border-left: 3px solid transparent; height: 48px; width: 48px; }}
@@ -280,9 +364,9 @@ class MainWindow(QMainWindow):
         header_layout = QHBoxLayout()
         self.sys_title = QLabel("Dashboard")
         self.sys_title.setStyleSheet(f"font-size: 21px; font-weight: 800; color: {PALETTE['text']};")
-        self.lbl_top_status = QLabel("OFFLINE")
+        self.lbl_top_status = QLabel("AWAITING LINK")
         self.lbl_top_status.setStyleSheet(
-            f"background: {PALETTE['danger']}; color: {PALETTE['bg']}; padding: 4px 12px; border-radius: 8px; font-weight: bold; font-size: 11px;")
+            f"background: {PALETTE['border']}; color: {PALETTE['muted']}; padding: 4px 12px; border-radius: 8px; font-weight: bold; font-size: 11px;")
 
         header_layout.addWidget(self.sys_title)
         header_layout.addStretch()
@@ -307,8 +391,11 @@ class MainWindow(QMainWindow):
         self.lbl_speed_val.setStyleSheet(f"color: {PALETTE['accent']};")
         lbl_speed_title = QLabel("SPEED (KM/H)")
         lbl_speed_title.setStyleSheet(f"color: {PALETTE['muted']}; font-weight: 700; font-size: 10px;")
+        self.lbl_speed_title = lbl_speed_title
+        self.spark_speed = Sparkline(PALETTE["accent"])
         vbox_speed.addWidget(self.lbl_speed_val)
         vbox_speed.addWidget(lbl_speed_title)
+        vbox_speed.addWidget(self.spark_speed)
 
         vbox_hdg = QVBoxLayout()
         self.lbl_hdg_val = QLabel("0°")
@@ -344,8 +431,14 @@ class MainWindow(QMainWindow):
         health_layout.addSpacing(12)
 
         self.lbl_hdop = self.create_stat_row("HDOP", "--", health_layout)
+        self.spark_hdop = Sparkline(PALETTE["warning"])
+        health_layout.addWidget(self.spark_hdop)
+        health_layout.addSpacing(6)
         self.lbl_pkts = self.create_stat_row("Packets", "0 Hz", health_layout)
         self.lbl_latency = self.create_stat_row("Latency", "-- ms", health_layout)
+        health_layout.addSpacing(6)
+        self.lbl_flight_time = self.create_stat_row("Flight Time", "--:--", health_layout)
+        self.lbl_dist_home = self.create_stat_row("Dist. to Home", "--", health_layout)
         dash_layout.addWidget(card_health)
         dash_layout.addStretch()
 
@@ -379,9 +472,105 @@ class MainWindow(QMainWindow):
         events_layout.addWidget(self.tab_events)
         logs_layout.addWidget(card_events)
 
+        # --- Page 3: Settings ---
+        self.page_settings = QWidget()
+        settings_layout = QVBoxLayout(self.page_settings)
+        settings_layout.setContentsMargins(0, 0, 0, 0)
+        settings_layout.setSpacing(16)
+
+        toggle_style = f"""
+            QPushButton {{ background: {PALETTE['bezel']}; color: {PALETTE['muted']}; border: 1px solid {PALETTE['border']}; padding: 6px 14px; border-radius: 8px; font-weight: 700; font-size: 11px; }}
+            QPushButton:checked {{ background: {PALETTE['accent']}; color: {PALETTE['bg']}; border: 1px solid {PALETTE['accent']}; }}
+        """
+
+        card_units = self.create_card()
+        units_layout = QVBoxLayout(card_units)
+        lbl_units_title = QLabel("UNITS")
+        lbl_units_title.setStyleSheet(f"font-size: 13px; font-weight: bold; color: {PALETTE['text']};")
+        units_layout.addWidget(lbl_units_title)
+        units_layout.addSpacing(8)
+
+        speed_unit_row = QHBoxLayout()
+        lbl_speed_unit = QLabel("Speed")
+        lbl_speed_unit.setStyleSheet(f"color: {PALETTE['muted']}; font-size: 13px;")
+        self.btn_kmh = QPushButton("KM/H")
+        self.btn_mph = QPushButton("MPH")
+        for b in (self.btn_kmh, self.btn_mph):
+            b.setCheckable(True)
+            b.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+            b.setStyleSheet(toggle_style)
+        self.btn_kmh.setChecked(True)
+        self.speed_unit_group = QButtonGroup(self)
+        self.speed_unit_group.setExclusive(True)
+        self.speed_unit_group.addButton(self.btn_kmh)
+        self.speed_unit_group.addButton(self.btn_mph)
+        self.btn_kmh.clicked.connect(lambda: self.set_speed_unit("kmh"))
+        self.btn_mph.clicked.connect(lambda: self.set_speed_unit("mph"))
+        speed_unit_row.addWidget(lbl_speed_unit)
+        speed_unit_row.addStretch()
+        speed_unit_row.addWidget(self.btn_kmh)
+        speed_unit_row.addWidget(self.btn_mph)
+        units_layout.addLayout(speed_unit_row)
+        units_layout.addSpacing(10)
+
+        dist_unit_row = QHBoxLayout()
+        lbl_dist_unit = QLabel("Distance")
+        lbl_dist_unit.setStyleSheet(f"color: {PALETTE['muted']}; font-size: 13px;")
+        self.btn_metric = QPushButton("METRIC")
+        self.btn_imperial = QPushButton("IMPERIAL")
+        for b in (self.btn_metric, self.btn_imperial):
+            b.setCheckable(True)
+            b.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+            b.setStyleSheet(toggle_style)
+        self.btn_metric.setChecked(True)
+        self.dist_unit_group = QButtonGroup(self)
+        self.dist_unit_group.setExclusive(True)
+        self.dist_unit_group.addButton(self.btn_metric)
+        self.dist_unit_group.addButton(self.btn_imperial)
+        self.btn_metric.clicked.connect(lambda: self.set_dist_unit("metric"))
+        self.btn_imperial.clicked.connect(lambda: self.set_dist_unit("imperial"))
+        dist_unit_row.addWidget(lbl_dist_unit)
+        dist_unit_row.addStretch()
+        dist_unit_row.addWidget(self.btn_metric)
+        dist_unit_row.addWidget(self.btn_imperial)
+        units_layout.addLayout(dist_unit_row)
+
+        settings_layout.addWidget(card_units)
+
+        card_link = self.create_card()
+        link_layout = QVBoxLayout(card_link)
+        lbl_link_title = QLabel("TELEMETRY LINK")
+        lbl_link_title.setStyleSheet(f"font-size: 13px; font-weight: bold; color: {PALETTE['text']};")
+        link_layout.addWidget(lbl_link_title)
+        link_layout.addSpacing(8)
+
+        port_row = QHBoxLayout()
+        lbl_port = QLabel("UDP Port")
+        lbl_port.setStyleSheet(f"color: {PALETTE['muted']}; font-size: 13px;")
+        self.port_input = QLineEdit(str(self.udp_port))
+        self.port_input.setFixedWidth(90)
+        btn_apply_port = QPushButton("Apply & Restart")
+        btn_apply_port.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        btn_apply_port.setStyleSheet(f"background: {PALETTE['accent']}; color: {PALETTE['bg']}; border: none;")
+        btn_apply_port.clicked.connect(self.on_apply_port_pressed)
+        port_row.addWidget(lbl_port)
+        port_row.addStretch()
+        port_row.addWidget(self.port_input)
+        port_row.addWidget(btn_apply_port)
+        link_layout.addLayout(port_row)
+
+        lbl_port_note = QLabel("Changing the port stops and rebinds the UDP listener immediately -- the link will show AWAITING LINK until the first packet arrives on the new port.")
+        lbl_port_note.setWordWrap(True)
+        lbl_port_note.setStyleSheet(f"color: {PALETTE['muted']}; font-size: 11px;")
+        link_layout.addWidget(lbl_port_note)
+
+        settings_layout.addWidget(card_link)
+        settings_layout.addStretch()
+
         self.stacked_widget.addWidget(self.page_dashboard)
         self.stacked_widget.addWidget(self.page_raw)
         self.stacked_widget.addWidget(self.page_logs)
+        self.stacked_widget.addWidget(self.page_settings)
 
         center_layout.addWidget(self.stacked_widget)
         root_layout.addWidget(center_panel)
@@ -404,12 +593,12 @@ class MainWindow(QMainWindow):
         btn_new_mission = QPushButton("New Mission")
         btn_new_mission.setStyleSheet(f"background: {PALETTE['accent']}; color: {PALETTE['bg']}; border: none;")
         btn_new_mission.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        btn_new_mission.clicked.connect(lambda: self.nav.log_event("UI", "New Mission created"))
+        btn_new_mission.clicked.connect(self.on_new_mission_pressed)
 
         btn_export = QPushButton("Export")
         btn_export.setStyleSheet(f"background: {PALETTE['panel']}; color: {PALETTE['text']}; border: 1px solid {PALETTE['border']};")
         btn_export.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        btn_export.clicked.connect(lambda: self.nav.log_event("UI", "Telemetry Export Triggered"))
+        btn_export.clicked.connect(self.on_export_pressed)
 
         self.pulse_indicator = QLabel("● LIVE")
         self.pulse_indicator.setStyleSheet(f"color: {PALETTE['muted']}; font-weight: 900; font-size: 14px;")
@@ -427,6 +616,7 @@ class MainWindow(QMainWindow):
         map_frame.setStyleSheet(f"background: {PALETTE['bezel']}; border-radius: 14px; border: 1px solid {PALETTE['border']};")
         map_frame_layout = QVBoxLayout(map_frame)
         map_frame_layout.setContentsMargins(0, 0, 0, 0)
+        self.map_frame = map_frame
 
         self.web_view = QWebEngineView()
         self.web_view.page().setBackgroundColor(QColor(PALETTE["bezel"]))
@@ -444,8 +634,127 @@ class MainWindow(QMainWindow):
         self.pulse_state = False
         self.last_handled_events = 0
 
+        # Toast/snackbar overlay for transient action feedback (export result,
+        # search result, mission reset confirmation) -- floats above everything,
+        # positioned on demand in show_toast() rather than tracked via resize events.
+        self.toast_label = QLabel("", central_widget)
+        self.toast_label.setWordWrap(True)
+        self.toast_label.hide()
+        self.toast_timer = QTimer(self)
+        self.toast_timer.setSingleShot(True)
+        self.toast_timer.timeout.connect(self.toast_label.hide)
+
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_gui)
+
+    def show_toast(self, message: str, kind: str = "info"):
+        accent = {
+            "info": PALETTE["accent"],
+            "success": PALETTE["success"],
+            "warning": PALETTE["warning"],
+            "danger": PALETTE["danger"],
+        }.get(kind, PALETTE["accent"])
+
+        self.toast_label.setText(message)
+        self.toast_label.setStyleSheet(f"""
+            background: {PALETTE['panel']};
+            color: {PALETTE['text']};
+            border: 1px solid {PALETTE['border']};
+            border-left: 4px solid {accent};
+            border-radius: 10px;
+            padding: 10px 16px;
+            font-size: 12px;
+            font-weight: 600;
+        """)
+        self.toast_label.setMaximumWidth(340)
+        self.toast_label.adjustSize()
+
+        # Centered under the map, not the whole window -- that's where attention
+        # already is while watching a live flight, and it won't compete with the
+        # sidebar/cards for space.
+        margin_bottom = 28
+        frame_top_left = self.map_frame.mapTo(self.centralWidget(), self.map_frame.rect().topLeft())
+        frame_w = self.map_frame.width()
+        frame_h = self.map_frame.height()
+
+        x = frame_top_left.x() + (frame_w - self.toast_label.width()) // 2
+        y = frame_top_left.y() + frame_h - self.toast_label.height() - margin_bottom
+        self.toast_label.move(max(x, 0), max(y, 0))
+        self.toast_label.show()
+        self.toast_label.raise_()
+        self.toast_timer.start(3200)
+
+    def keyPressEvent(self, event):
+        """1/2/3 switch sidebar tabs, '/' focuses search, Esc dismisses the toast
+        and drops focus out of the search box. Suppressed while the user is
+        actively typing in a text field, so shortcuts never eat real input."""
+        focus_widget = QApplication.focusWidget()
+        typing_in_field = isinstance(focus_widget, (QLineEdit, QTextEdit))
+        key = event.key()
+
+        if key == Qt.Key.Key_Escape:
+            self.toast_label.hide()
+            if typing_in_field:
+                focus_widget.clearFocus()
+            return
+
+        if not typing_in_field:
+            if key == Qt.Key.Key_1:
+                self.sidebar_btns[0][0].click()
+                return
+            if key == Qt.Key.Key_2:
+                self.sidebar_btns[1][0].click()
+                return
+            if key == Qt.Key.Key_3:
+                self.sidebar_btns[2][0].click()
+                return
+            if key == Qt.Key.Key_4:
+                self.sidebar_btns[3][0].click()
+                return
+            if event.text() == "/":
+                self.search_box.setFocus()
+                self.search_box.selectAll()
+                return
+
+        super().keyPressEvent(event)
+
+    def set_speed_unit(self, unit: str):
+        self.unit_speed = unit
+        self.lbl_speed_title.setText("SPEED (MPH)" if unit == "mph" else "SPEED (KM/H)")
+
+    def set_dist_unit(self, unit: str):
+        self.unit_dist = unit
+
+    def on_apply_port_pressed(self):
+        text = self.port_input.text().strip()
+        try:
+            new_port = int(text)
+            if not (1 <= new_port <= 65535):
+                raise ValueError("out of range")
+        except ValueError:
+            self.show_toast("Enter a valid port (1-65535)", "danger")
+            return
+        self.restart_udp_listener(new_port)
+
+    def restart_udp_listener(self, new_port: int):
+        """Cleanly stops the current UDP listener thread and rebinds on a new
+        port. Uses the stop_event/thread handles engine.py's start_udp_listener
+        now supports; marks the link as disconnected until a real packet
+        arrives on the new port, since that's the honest state."""
+        if self.udp_stop_event is not None:
+            self.udp_stop_event.set()
+            if self.udp_thread is not None:
+                self.udp_thread.join(timeout=1.0)
+
+        with self.nav.lock:
+            self.nav.udp_connected = False
+
+        self.udp_stop_event = threading.Event()
+        self.udp_thread = start_udp_listener(self.nav, port=new_port, stop_event=self.udp_stop_event)
+        self.udp_port = new_port
+
+        self.nav.log_event("SYSTEM", f"UDP listener restarted on port {new_port}")
+        self.show_toast(f"Listening on port {new_port}", "success")
 
     def switch_sidebar_view(self, index, active_btn, icon_key):
         for btn, normal_icon, active_icon in self.sidebar_btns:
@@ -457,14 +766,145 @@ class MainWindow(QMainWindow):
                 btn.setIcon(normal_icon)
 
         self.stacked_widget.setCurrentIndex(index)
-        titles = ["Dashboard", "Raw Telemetry", "Mission Logs"]
+        titles = ["Dashboard", "Raw Telemetry", "Mission Logs", "Settings"]
         self.sys_title.setText(titles[index])
 
     def on_search_pressed(self):
-        txt = self.search_box.text()
+        txt = self.search_box.text().strip()
         if txt:
             self.nav.log_event("UI", f"Searched for: {txt}")
+            self.web_view.page().runJavaScript(f"searchLocation({json.dumps(txt)});", self._handle_search_result)
             self.search_box.clear()
+
+    def _handle_search_result(self, result):
+        if isinstance(result, dict) and result.get("found"):
+            name = result.get("name", "")
+            short_name = name.split(",")[0] if name else "location"
+            self.show_toast(f"Found: {short_name}", "success")
+        else:
+            self.show_toast(f"No results for that search", "warning")
+
+    def on_new_mission_pressed(self):
+        """
+        Resets the active mission: clears accumulated trajectories/events on the
+        shared NavigationSystem, resets counters and arm/status state, and clears
+        the map + side panels. Deliberately leaves the EKF state vector (nav.x),
+        covariance (nav.P), and local tangent-plane origin (ref_lat/ref_lon) alone
+        -- the filter keeps correcting toward the next real GPS fix in the same
+        coordinate frame, so resetting those would add complexity with no benefit.
+        """
+        confirm_box = QMessageBox(self)
+        confirm_box.setWindowTitle("Start New Mission")
+        confirm_box.setText("This clears the current flight trajectory and event log. Continue?")
+        confirm_box.setIcon(QMessageBox.Icon.Warning)
+        confirm_box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel)
+        confirm_box.setDefaultButton(QMessageBox.StandardButton.Cancel)
+        confirm_box.setStyleSheet(f"""
+            QMessageBox {{ background-color: {PALETTE['panel']}; }}
+            QMessageBox QLabel {{ color: {PALETTE['text']}; font-size: 13px; }}
+            QPushButton {{ background: {PALETTE['bezel']}; color: {PALETTE['text']}; border: 1px solid {PALETTE['border']}; min-width: 70px; padding: 6px 14px; }}
+            QPushButton:hover {{ background: {PALETTE['accent']}; color: {PALETTE['bg']}; }}
+        """)
+        if confirm_box.exec() != QMessageBox.StandardButton.Yes:
+            return
+
+        with self.nav.lock:
+            self.nav.ekf_coords.clear()
+            self.nav.raw_gps_coords.clear()
+            self.nav.events.clear()
+            self.nav.packet_count = 0
+            self.nav.start_time = time.time()
+            self.nav.home_lat = None
+            self.nav.home_lon = None
+            self.nav.is_armed = False
+            self.nav.system_status = "STANDBY"
+            self.nav.current_speed = 0.0
+
+        self.last_handled_events = 0
+        self.tab_events.clear()
+        self.tab_raw.clear()
+        self.spark_speed.clear_trend()
+        self.spark_hdop.clear_trend()
+        self.web_view.page().runJavaScript("clearMissionPaths();")
+        self.nav.log_event("UI", "New Mission created")
+        self.show_toast("New mission started", "info")
+
+    def on_export_pressed(self):
+        """Exports the current mission trajectory + log. Offers JSON (full
+        snapshot), CSV (trajectory points, for spreadsheets/GIS import), or
+        KML (for Google Earth) via the save dialog's format picker."""
+        import datetime
+
+        default_name = f"mission_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        path, selected_filter = QFileDialog.getSaveFileName(
+            self, "Export Mission Data", default_name,
+            "JSON - full snapshot (*.json);;CSV - trajectory (*.csv);;KML - Google Earth (*.kml)"
+        )
+        if not path:
+            return
+
+        with self.nav.lock:
+            ekf_c = [[c[0], c[1]] for c in self.nav.ekf_coords if not np.isnan(c[0])]
+            raw_c = [[c[0], c[1]] for c in self.nav.raw_gps_coords if not np.isnan(c[0])]
+            events_snapshot = list(self.nav.events)
+            summary = {
+                "exported_at": datetime.datetime.now().isoformat(),
+                "system_status": self.nav.system_status,
+                "packet_count": self.nav.packet_count,
+                "home": {"lat": self.nav.home_lat, "lon": self.nav.home_lon},
+            }
+
+        try:
+            if selected_filter.startswith("CSV"):
+                if not path.lower().endswith(".csv"):
+                    path += ".csv"
+                self._export_csv(path, ekf_c, raw_c)
+            elif selected_filter.startswith("KML"):
+                if not path.lower().endswith(".kml"):
+                    path += ".kml"
+                self._export_kml(path, ekf_c)
+            else:
+                if not path.lower().endswith(".json"):
+                    path += ".json"
+                data = dict(summary, ekf_trajectory=ekf_c, raw_gps_trajectory=raw_c, events=events_snapshot)
+                with open(path, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=2)
+
+            self.nav.log_event("UI", f"Telemetry exported to {path}")
+            self.show_toast(f"Exported to {path.split('/')[-1]}", "success")
+        except OSError as e:
+            self.nav.log_event("UI", f"Export failed: {e}")
+            self.show_toast(f"Export failed: {e}", "danger")
+
+    @staticmethod
+    def _export_csv(path, ekf_c, raw_c):
+        import csv
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(["source", "index", "latitude", "longitude"])
+            for i, (lat, lon) in enumerate(ekf_c):
+                writer.writerow(["ekf", i, lat, lon])
+            for i, (lat, lon) in enumerate(raw_c):
+                writer.writerow(["raw_gps", i, lat, lon])
+
+    @staticmethod
+    def _export_kml(path, ekf_c):
+        coords_str = " ".join(f"{lon},{lat},0" for lat, lon in ekf_c)
+        kml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+<Document>
+<name>UAV Mission Trajectory</name>
+<Placemark>
+<name>EKF Trajectory</name>
+<LineString>
+<altitudeMode>clampToGround</altitudeMode>
+<coordinates>{coords_str}</coordinates>
+</LineString>
+</Placemark>
+</Document>
+</kml>"""
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(kml)
 
     def create_card(self):
         card = QFrame()
@@ -475,14 +915,23 @@ class MainWindow(QMainWindow):
         row = QHBoxLayout()
         lbl_text = QLabel(text)
         lbl_text.setStyleSheet(f"color: {PALETTE['muted']}; font-weight: 600; font-size: 13px;")
-        indicator = QLabel()
-        indicator.setFixedSize(12, 12)
-        indicator.setStyleSheet(f"background-color: {PALETTE['danger']}; border-radius: 6px;")
+        indicator = QLabel("?")
+        indicator.setFixedSize(16, 16)
+        indicator.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        indicator.setStyleSheet(
+            f"background-color: {PALETTE['muted']}; color: {PALETTE['bg']}; border-radius: 8px; font-weight: 900; font-size: 9px;")
         row.addWidget(lbl_text)
         row.addStretch()
         row.addWidget(indicator)
         parent_layout.addLayout(row)
         return indicator
+
+    @staticmethod
+    def _status_badge_style(bg_hex: str, symbol: str) -> str:
+        """One place to build the (color + shape-symbol) pair for a status
+        indicator, so state is never conveyed by color alone -- a real
+        accessibility requirement, not just polish."""
+        return f"background-color: {bg_hex}; color: {PALETTE['bg']}; border-radius: 8px; font-weight: 900; font-size: 9px;"
 
     def create_stat_row(self, title, val, parent_layout):
         row = QHBoxLayout()
@@ -582,6 +1031,7 @@ class MainWindow(QMainWindow):
                 var accuracyCircle = L.circle([{center_lat}, {center_lon}], {{radius: 0, color: 'rgba(76, 141, 255, 0.4)', fillOpacity: 0.1, weight: 1}}).addTo(map);
 
                 var homeMarker = null;
+                var searchMarker = null;
                 var dronePos = [{center_lat}, {center_lon}];
                 var homePos = null;
                 var autoPan = true;
@@ -613,6 +1063,41 @@ class MainWindow(QMainWindow):
 
                 function recenterMap() {{ autoPan = true; map.panTo(dronePos, {{animate: true}}); }}
                 function goHome() {{ if(homePos) map.panTo(homePos, {{animate: true}}); autoPan = false; }}
+
+                // --- Location search (Nominatim / OpenStreetMap geocoding) ---
+                function searchLocation(query) {{
+                    if (!query) return Promise.resolve({{found: false}});
+                    return fetch('https://nominatim.openstreetmap.org/search?format=json&limit=1&q=' + encodeURIComponent(query))
+                        .then(function(r) {{ return r.json(); }})
+                        .then(function(results) {{
+                            if (!results || results.length === 0) {{
+                                return {{found: false}};
+                            }}
+                            var lat = parseFloat(results[0].lat);
+                            var lon = parseFloat(results[0].lon);
+                            if (searchMarker) {{ map.removeLayer(searchMarker); }}
+                            searchMarker = L.marker([lat, lon]).addTo(map).bindPopup(results[0].display_name).openPopup();
+                            autoPan = false;
+                            map.setView([lat, lon], 16, {{animate: true}});
+                            return {{found: true, name: results[0].display_name}};
+                        }})
+                        .catch(function(err) {{ return {{found: false, error: String(err)}}; }});
+                }}
+
+                // --- Full mission reset (called from the "New Mission" button) ---
+                function clearMissionPaths() {{
+                    ekfPath.setLatLngs([]);
+                    rawGpsPath.setLatLngs([]);
+                    accuracyCircle.setLatLng([{center_lat}, {center_lon}]);
+                    accuracyCircle.setRadius(0);
+                    if (homeMarker) {{ map.removeLayer(homeMarker); homeMarker = null; }}
+                    if (searchMarker) {{ map.removeLayer(searchMarker); searchMarker = null; }}
+                    homePos = null;
+                    dronePos = [{center_lat}, {center_lon}];
+                    droneMarker.setLatLng(dronePos);
+                    autoPan = true;
+                    map.setView(dronePos, 18, {{animate: false}});
+                }}
 
                 function updateMapData(ekfCoords, rawCoords, heading, hdop, homeLat, homeLon, gpsValid) {{
                     if (ekfCoords.length === 0) return;
@@ -690,6 +1175,7 @@ class MainWindow(QMainWindow):
             status = self.nav.system_status
             home_l = self.nav.home_lat
             home_lon = self.nav.home_lon
+            last_ekf_pos = list(self.nav.ekf_coords[-1]) if self.nav.ekf_coords else None
 
             now = time.time()
             dt_start = now - self.nav.start_time
@@ -719,38 +1205,88 @@ class MainWindow(QMainWindow):
 
             self.tab_raw.setText(raw_str)
 
-        # Connection Pulse & Status
-        if is_active:
+        # Connection Pulse & Status -- three real states, not just on/off
+        if not self.nav.udp_connected:
+            # No packet received yet since launch or since the last New Mission reset.
+            self.pulse_indicator.setStyleSheet(f"color: {PALETTE['muted']}; font-weight: 900; font-size: 14px;")
+            self.lbl_top_status.setText("AWAITING LINK")
+            self.lbl_top_status.setStyleSheet(
+                f"background: {PALETTE['border']}; color: {PALETTE['muted']}; padding: 4px 12px; border-radius: 8px; font-weight: bold; font-size: 11px;")
+            self.ind_link.setText("?")
+            self.ind_link.setStyleSheet(self._status_badge_style(PALETTE['muted'], "?"))
+        elif is_active:
             self.pulse_state = not self.pulse_state
             color = PALETTE["success"] if self.pulse_state else PALETTE["muted"]
             self.pulse_indicator.setStyleSheet(f"color: {color}; font-weight: 900; font-size: 14px;")
             self.lbl_top_status.setText(f"{status}")
             self.lbl_top_status.setStyleSheet(
                 f"background: {PALETTE['success']}; color: {PALETTE['bg']}; padding: 4px 12px; border-radius: 8px; font-weight: bold; font-size: 11px;")
-            self.ind_link.setStyleSheet(f"background-color: {PALETTE['success']}; border-radius: 6px;")
+            self.ind_link.setText("\u2713")
+            self.ind_link.setStyleSheet(self._status_badge_style(PALETTE['success'], "\u2713"))
         else:
-            self.pulse_indicator.setStyleSheet(f"color: {PALETTE['muted']}; font-weight: 900; font-size: 14px;")
-            self.lbl_top_status.setText("OFFLINE")
+            # Was connected, but no packet for 2s+ -- flag as recoverable, not a hard failure.
+            self.pulse_indicator.setStyleSheet(f"color: {PALETTE['warning']}; font-weight: 900; font-size: 14px;")
+            self.lbl_top_status.setText("SIGNAL LOST")
             self.lbl_top_status.setStyleSheet(
-                f"background: {PALETTE['danger']}; color: {PALETTE['bg']}; padding: 4px 12px; border-radius: 8px; font-weight: bold; font-size: 11px;")
-            self.ind_link.setStyleSheet(f"background-color: {PALETTE['danger']}; border-radius: 6px;")
+                f"background: {PALETTE['warning']}; color: {PALETTE['bg']}; padding: 4px 12px; border-radius: 8px; font-weight: bold; font-size: 11px;")
+            self.ind_link.setText("!")
+            self.ind_link.setStyleSheet(self._status_badge_style(PALETTE['warning'], "!"))
 
         # PFD Telemetry Header & HUD Update
-        self.lbl_speed_val.setText(f"{speed:.1f}")
+        if self.unit_speed == "mph":
+            speed_display = speed * 0.621371
+        else:
+            speed_display = speed
+        self.lbl_speed_val.setText(f"{speed_display:.1f}")
         self.lbl_hdg_val.setText(f"{heading:0.0f}°")
 
-        self.horizon.set_telemetry(pitch, roll, heading, speed, altitude=0.0)
+        # engine.py's UDP packet has no altitude field today, so this is honestly
+        # flagged as unavailable (HUD shows "N/A") rather than a fabricated 0.0.
+        self.horizon.set_telemetry(pitch, roll, heading, speed, altitude=0.0, altitude_valid=False)
 
-        # Health Indicators
+        # Health Indicators (color + symbol together -- never color alone)
+        self.ind_gps.setText("\u2713" if gps_valid else "\u2715")
         self.ind_gps.setStyleSheet(
-            f"background-color: {PALETTE['success']}; border-radius: 6px;" if gps_valid else f"background-color: {PALETTE['danger']}; border-radius: 6px;")
+            self._status_badge_style(PALETTE['success'], "\u2713") if gps_valid
+            else self._status_badge_style(PALETTE['danger'], "\u2715"))
+        self.ind_ekf.setText("\u2713" if status == "ARMED" else "!")
         self.ind_ekf.setStyleSheet(
-            f"background-color: {PALETTE['success']}; border-radius: 6px;" if status == "ARMED" else f"background-color: {PALETTE['warning']}; border-radius: 6px;")
+            self._status_badge_style(PALETTE['success'], "\u2713") if status == "ARMED"
+            else self._status_badge_style(PALETTE['warning'], "!"))
 
         # Stats
         self.lbl_hdop.setText(f"{hdop:.2f}")
         self.lbl_pkts.setText(f"{pkts_sec:.1f} Hz")
         self.lbl_latency.setText(f"{dt_packet * 1000:.0f} ms" if is_active else "-- ms")
+
+        # Flight time: counts from nav.start_time, so it keeps running through a
+        # brief signal-loss blip (that's meaningful) but resets to "--:--" until
+        # the link has connected at least once.
+        if self.nav.udp_connected:
+            mins, secs = divmod(int(dt_start), 60)
+            hours, mins = divmod(mins, 60)
+            flight_time_str = f"{hours:d}:{mins:02d}:{secs:02d}" if hours > 0 else f"{mins:02d}:{secs:02d}"
+        else:
+            flight_time_str = "--:--"
+        self.lbl_flight_time.setText(flight_time_str)
+
+        # Distance to home: only meaningful once both a home fix and a current
+        # filtered position exist.
+        if home_l is not None and home_lon is not None and last_ekf_pos is not None:
+            dist_m = haversine_m(home_l, home_lon, last_ekf_pos[0], last_ekf_pos[1])
+            if self.unit_dist == "imperial":
+                dist_ft = dist_m * 3.28084
+                dist_str = f"{dist_ft:.0f} ft" if dist_ft < 5280 else f"{dist_ft / 5280:.2f} mi"
+            else:
+                dist_str = f"{dist_m:.0f} m" if dist_m < 1000 else f"{dist_m / 1000:.2f} km"
+        else:
+            dist_str = "--"
+        self.lbl_dist_home.setText(dist_str)
+
+        # Trend strips -- only fed with genuine live samples, never while offline
+        if is_active:
+            self.spark_speed.push(speed)
+            self.spark_hdop.push(hdop)
 
         # MAP UPDATE
         if self.map_ready and is_active:
@@ -773,9 +1309,11 @@ class MainWindow(QMainWindow):
 # ==========================================
 if __name__ == '__main__':
     nav = NavigationSystem()
-    start_udp_listener(nav, port=4210)
+    INITIAL_UDP_PORT = 4210
+    udp_stop_event = threading.Event()
+    udp_thread = start_udp_listener(nav, port=INITIAL_UDP_PORT, stop_event=udp_stop_event)
 
     app = QApplication(sys.argv)
-    window = MainWindow(nav)
+    window = MainWindow(nav, udp_port=INITIAL_UDP_PORT, udp_stop_event=udp_stop_event, udp_thread=udp_thread)
     window.show()
     sys.exit(app.exec())
